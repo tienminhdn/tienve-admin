@@ -1,0 +1,1 @@
+window.ADMIN_CONFIG = { supabaseUrl: "https://duoclnivmwflbmqhtlpn.supabase.co", anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR1b2Nsbml2bXdmbGJtcWh0bHBuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIxODIwODMsImV4cCI6MjEwNzc1ODA4M30.447D2_EmqRvB5gO7ixVgHI-BWjVshIMnnUZiWdBtfKA" };

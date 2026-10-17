@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Tiền Về · Admin</title>
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<style>
+  :root {
+    --bg: #f4f6f8; --card: #fff; --text: #0f172a; --muted: #64748b; --line: #e2e8f0;
+    --brand: #10b981; --brand-dark: #047857; --warn: #b45309; --warn-bg: #fef3c7;
+    --danger: #e11d48; --danger-bg: #ffe4e6; --info-bg: #e0f2fe;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 16px; padding: 14px 24px; background: var(--card); border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 18px; }
+  header .who { margin-left: auto; color: var(--muted); font-size: 13px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 9px 14px; cursor: pointer; background: var(--line); color: var(--text); }
+  button.primary { background: var(--brand); color: #fff; font-weight: 600; }
+  button.danger { background: var(--danger-bg); color: var(--danger); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  input { font: inherit; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; width: 100%; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tabs button.active { background: var(--text); color: #fff; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin-bottom: 14px; }
+  .login { max-width: 380px; margin: 60px auto; }
+  .login h2 { margin-top: 0; }
+  .login .row { display: grid; gap: 10px; margin-top: 12px; }
+  .wd { display: grid; grid-template-columns: 1fr 230px; gap: 18px; }
+  @media (max-width: 760px) { .wd { grid-template-columns: 1fr; } }
+  .amount { font-size: 28px; font-weight: 700; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .kv { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px; margin: 12px 0; font-size: 14px; }
+  .kv b { font-weight: 600; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.ok { background: #d1fae5; color: var(--brand-dark); }
+  .pill.bad { background: var(--danger-bg); color: var(--danger); }
+  .pill.info { background: var(--info-bg); color: #0369a1; }
+  .qr { text-align: center; }
+  .qr img { width: 100%; max-width: 230px; border-radius: 12px; border: 1px solid var(--line); background: #fff; }
+  .momo { background: #fdf2f8; border-radius: 12px; padding: 14px; font-size: 14px; }
+  .copy { cursor: pointer; border-bottom: 1px dashed var(--muted); }
+  .check { background: var(--warn-bg); color: var(--warn); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin: 10px 0; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 0; }
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px; display: none; }
+  .err { color: var(--danger); font-size: 13px; min-height: 18px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Tiền Về · Admin rút tiền</h1>
+  <span class="who" id="who"></span>
+  <button id="logout" hidden>Đăng xuất</button>
+</header>
+<main id="app"></main>
+<div class="toast" id="toast"></div>
+
+<script>
+// Phase-1 manual payouts (docs/CONTRACT.md §10): list requests, pay via VietQR / MoMo, mark paid.
+const cfg = window.ADMIN_CONFIG;
+const app = document.getElementById('app');
+if (!cfg) { app.innerHTML = '<div class="card">Chạy <code>./admin/serve.sh</code> để tạo config.js.</div>'; throw new Error('no config'); }
+const sb = supabase.createClient(cfg.supabaseUrl, cfg.anonKey);
+
+// Napas BINs for VietQR (bank_code from payout_accounts → BIN).
+const BIN = { VCB: '970436', TCB: '970407', BIDV: '970418', CTG: '970415', VTB: '970415', AGR: '970405', ACB: '970416',
+  MB: '970422', VPB: '970432', TPB: '970423', STB: '970403', VIB: '970441', HDB: '970437', SHB: '970443', MSB: '970426',
+  OCB: '970448', EIB: '970431', LPB: '970449', SEAB: '970440', NAB: '970428', VAB: '970427', BAB: '970409', ABB: '970425',
+  PVCB: '970412', SCB: '970429', CAKE: '546034', TIMO: '963388' };
+
+const vnd = (n) => new Intl.NumberFormat('vi-VN').format(n) + 'đ';
+const dt = (s) => s ? new Date(s).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }) : '–';
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const transferNote = (w) => `TIENVE ${w.id.slice(0, 8).toUpperCase()}`;
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = 'none', 2500); }
+async function copy(text) { await navigator.clipboard.writeText(text); toast('Đã copy: ' + text); }
+
+async function admin(action, params = {}) {
+  const { data, error } = await sb.functions.invoke('admin', { body: { action, ...params } });
+  if (error) {
+    let msg = error.message;
+    try { const body = await error.context.json(); msg = body?.error?.message || msg; } catch {}
+    throw new Error(msg);
+  }
+  return data.result;
+}
+
+// ---------------- Login (phone OTP; admin role checked by the function) ----------------
+function renderLogin(step = 'phone', phone = '') {
+  document.getElementById('logout').hidden = true;
+  document.getElementById('who').textContent = '';
+  app.innerHTML = `<div class="card login"><h2>Đăng nhập admin</h2>
+    <div class="meta">Dùng số điện thoại có quyền admin.</div>
+    <div class="row">${step === 'phone'
+      ? `<input id="phone" placeholder="0935 906 401" value="${esc(phone)}"><button class="primary" id="go">Nhận mã OTP</button>`
+      : `<div class="meta">Mã đã gửi tới ${esc(phone)}</div><input id="otp" inputmode="numeric" placeholder="Mã OTP 6 số"><button class="primary" id="go">Đăng nhập</button>`}
+      <div class="err" id="err"></div></div></div>`;
+  const e164 = (p) => '+84' + p.replace(/\D/g, '').replace(/^(84|0)/, '');
+  document.getElementById('go').onclick = async () => {
+    const err = document.getElementById('err'); err.textContent = '';
+    try {
+      if (step === 'phone') {
+        const p = document.getElementById('phone').value;
+        const { error } = await sb.auth.signInWithOtp({ phone: e164(p) });
+        if (error) throw error;
+        renderLogin('otp', p);
+      } else {
+        const { error } = await sb.auth.verifyOtp({ phone: e164(phone), token: document.getElementById('otp').value.trim(), type: 'sms' });
+        if (error) throw error;
+        start();
+      }
+    } catch (e) { err.textContent = e.message; }
+  };
+}
+
+// ---------------- Withdrawals ----------------
+let status = 'requested';
+async function load() {
+  app.innerHTML = `<div class="tabs">
+      ${[['requested', 'Chờ chuyển'], ['paid', 'Đã chuyển'], ['rejected', 'Từ chối']].map(([s, l]) =>
+        `<button data-s="${s}" class="${s === status ? 'active' : ''}">${l}</button>`).join('')}
+      <button id="refresh">↻ Làm mới</button>
+    </div><div id="list"><div class="empty">Đang tải…</div></div>`;
+  app.querySelectorAll('[data-s]').forEach((b) => b.onclick = () => { status = b.dataset.s; load(); });
+  document.getElementById('refresh').onclick = load;
+  const list = document.getElementById('list');
+  try {
+    const { withdrawals } = await admin('list_withdrawals', { status });
+    if (!withdrawals.length) { list.innerHTML = '<div class="empty">Không có lệnh nào.</div>'; return; }
+    list.innerHTML = withdrawals.map(card).join('');
+    bind(withdrawals);
+  } catch (e) {
+    list.innerHTML = `<div class="card err">${esc(e.message)}</div>`;
+    if (/quyền|forbidden|admin/i.test(e.message)) { await sb.auth.signOut(); renderLogin(); }
+  }
+}
+
+function card(w) {
+  const p = w.payout || {};
+  const overdue = w.status === 'requested' && w.expected_paid_by && new Date(w.expected_paid_by) < new Date();
+  const statusPill = { requested: overdue ? '<span class="pill bad">Quá hạn</span>' : '<span class="pill warn">Chờ chuyển</span>',
+    approved: '<span class="pill info">Đã duyệt</span>', paid: '<span class="pill ok">Đã chuyển</span>', rejected: '<span class="pill bad">Từ chối</span>' }[w.status];
+  const risk = w.risk_score >= 60 ? 'bad' : w.risk_score >= 30 ? 'warn' : 'ok';
+  const isBank = p.method === 'bank';
+  const qr = isBank && BIN[p.bank_code]
+    ? `https://img.vietqr.io/image/${BIN[p.bank_code]}-${encodeURIComponent(p.account_number)}-compact2.png?amount=${w.amount}&addInfo=${encodeURIComponent(transferNote(w))}&accountName=${encodeURIComponent(p.account_name || '')}`
+    : null;
+  const right = w.status !== 'requested' && w.status !== 'approved' ? '' : isBank
+    ? (qr ? `<div class="qr"><img src="${qr}" alt="VietQR"><div class="meta">Quét bằng app ngân hàng của bạn</div></div>` : '<div class="meta">Ngân hàng chưa có mã BIN – chuyển tay.</div>')
+    : `<div class="momo"><b>Chuyển qua MoMo</b><br>Mở MoMo → Chuyển tiền → nhập SĐT
+        <span class="copy" data-copy="${esc(p.account_number)}">${esc(p.account_number)}</span>,
+        số tiền <span class="copy" data-copy="${w.amount}">${vnd(w.amount)}</span>,
+        lời nhắn <span class="copy" data-copy="${esc(transferNote(w))}">${esc(transferNote(w))}</span>.</div>`;
+  return `<div class="card wd" data-id="${w.id}">
+    <div>
+      <div class="amount">${vnd(w.amount)} ${statusPill}</div>
+      <div class="meta">${esc(w.user?.full_name || 'Không tên')} · ${esc(w.user?.phone || '')} · tạo ${dt(w.created_at)}</div>
+      <div class="kv">
+        <span>Nhận về</span><b>${esc(p.bank_name || w.bank_name || '')}${isBank ? ' · ' + esc(p.bank_code || '') : ''}</b>
+        <span>Số TK / SĐT</span><b><span class="copy" data-copy="${esc(p.account_number || '')}">${esc(p.account_number || w.account_number_masked || '')}</span></b>
+        <span>Tên chủ TK</span><b>${esc(p.account_name || w.account_name || '')} ${p.verified ? '<span class="pill ok">đã xác minh</span>' : '<span class="pill warn">user tự nhập</span>'}</b>
+        <span>Nội dung CK</span><b><span class="copy" data-copy="${esc(transferNote(w))}">${esc(transferNote(w))}</span></b>
+        <span>Hạn chuyển</span><b>${dt(w.expected_paid_by)}</b>
+        <span>Điểm rủi ro</span><b><span class="pill ${risk}">${w.risk_score ?? 0}/100</span></b>
+        ${w.transaction_ref ? `<span>Mã giao dịch</span><b>${esc(w.transaction_ref)} · ${dt(w.paid_at)}</b>` : ''}
+        ${w.note ? `<span>Ghi chú</span><b>${esc(w.note)}</b>` : ''}
+      </div>
+      ${w.status === 'requested' || w.status === 'approved' ? `
+        <div class="check">⚠️ Trước khi bấm chuyển: tên người nhận hiện trên app ngân hàng/MoMo phải là <b>${esc(p.account_name || '')}</b>. Sai tên → bấm Từ chối (tiền tự hoàn vào ví user).</div>
+        <input class="ref" placeholder="Mã giao dịch ngân hàng (bắt buộc khi xác nhận)">
+        <div class="actions">
+          <button class="primary paid">Đã chuyển – thông báo cho user</button>
+          <button class="danger reject">Từ chối</button>
+        </div>` : ''}
+    </div>
+    <div>${right}</div>
+  </div>`;
+}
+
+function bind(list) {
+  app.querySelectorAll('[data-copy]').forEach((el) => el.onclick = () => copy(el.dataset.copy));
+  for (const w of list) {
+    const el = app.querySelector(`[data-id="${w.id}"]`);
+    const paid = el.querySelector('.paid'); const reject = el.querySelector('.reject');
+    if (paid) paid.onclick = async () => {
+      const ref = el.querySelector('.ref').value.trim();
+      if (!ref) { toast('Nhập mã giao dịch ngân hàng trước'); return; }
+      if (!confirm(`Xác nhận đã chuyển ${vnd(w.amount)} cho ${w.payout?.account_name}?`)) return;
+      paid.disabled = true;
+      try { await admin('mark_withdrawal_paid', { id: w.id, transaction_ref: ref }); toast('Đã xác nhận – user đã nhận thông báo'); load(); }
+      catch (e) { toast(e.message); paid.disabled = false; }
+    };
+    if (reject) reject.onclick = async () => {
+      const note = prompt('Lý do từ chối (user sẽ thấy):', 'Thông tin tài khoản nhận không khớp');
+      if (!note) return;
+      reject.disabled = true;
+      try { await admin('reject_withdrawal', { id: w.id, note }); toast('Đã từ chối – tiền đã hoàn vào ví user'); load(); }
+      catch (e) { toast(e.message); reject.disabled = false; }
+    };
+  }
+}
+
+async function start() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return renderLogin();
+  document.getElementById('who').textContent = session.user.phone ? '+' + session.user.phone : '';
+  const lo = document.getElementById('logout'); lo.hidden = false;
+  lo.onclick = async () => { await sb.auth.signOut(); renderLogin(); };
+  load();
+}
+setInterval(() => { if (status === 'requested' && document.visibilityState === 'visible' && document.getElementById('list')) load(); }, 60_000);
+start();
+</script>
+</body>
+</html>
