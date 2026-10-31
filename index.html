@@ -51,11 +51,20 @@
   .empty { text-align: center; color: var(--muted); padding: 40px 0; }
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px; display: none; }
   .err { color: var(--danger); font-size: 13px; min-height: 18px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 12px 0; }
+  .stats div { background: var(--bg); border-radius: 12px; padding: 10px 12px; }
+  .stats b { display: block; font-size: 20px; }
+  label.chk { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0; font-size: 14px; }
+  label.chk input { width: auto; margin-top: 3px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Tiền Về · Admin rút tiền</h1>
+  <h1>Tiền Về · Admin</h1>
   <span class="who" id="who"></span>
   <button id="logout" hidden>Đăng xuất</button>
 </header>
@@ -124,12 +133,13 @@ function renderLogin(step = 'phone', phone = '') {
 let status = 'requested';
 async function load() {
   app.innerHTML = `<div class="tabs">
-      ${[['requested', 'Chờ chuyển'], ['paid', 'Đã chuyển'], ['rejected', 'Từ chối']].map(([s, l]) =>
+      ${[['requested', 'Chờ chuyển'], ['paid', 'Đã chuyển'], ['rejected', 'Từ chối'], ['shopee', '🛒 Nhập báo cáo Shopee']].map(([s, l]) =>
         `<button data-s="${s}" class="${s === status ? 'active' : ''}">${l}</button>`).join('')}
       <button id="refresh">↻ Làm mới</button>
     </div><div id="list"><div class="empty">Đang tải…</div></div>`;
   app.querySelectorAll('[data-s]').forEach((b) => b.onclick = () => { status = b.dataset.s; load(); });
   document.getElementById('refresh').onclick = load;
+  if (status === 'shopee') return renderShopee();
   const list = document.getElementById('list');
   try {
     const { withdrawals } = await admin('list_withdrawals', { status });
@@ -205,6 +215,94 @@ function bind(list) {
       catch (e) { toast(e.message); reject.disabled = false; }
     };
   }
+}
+
+// ---------------- Shopee: conversion report upload (no Shopee API, see networks/shopee.ts) ----------------
+const STATUS_VI = { pending: ['Chờ duyệt', 'warn'], approved: ['Đã duyệt', 'info'], paid: ['Đã thanh toán', 'ok'], rejected: ['Huỷ', 'bad'] };
+const pill = (st) => st ? `<span class="pill ${STATUS_VI[st]?.[1] || ''}">${STATUS_VI[st]?.[0] || esc(st)}</span>` : '–';
+
+async function renderShopee() {
+  const list = document.getElementById('list');
+  list.innerHTML = `<div class="card">
+      <h3 style="margin-top:0">Nhập báo cáo chuyển đổi Shopee</h3>
+      <div class="meta" id="lastImport">Đang kiểm tra lần nhập gần nhất…</div>
+      <ol class="meta">
+        <li>Vào <b>affiliate.shopee.vn → Báo cáo → Báo cáo chuyển đổi</b>, chọn 30 ngày gần nhất, bấm <b>Xuất (CSV)</b>.</li>
+        <li>Chọn file ở dưới → <b>Xem trước</b> (chưa ghi gì) → kiểm tra → <b>Xác nhận nhập</b>.</li>
+        <li>Nhập lại cùng file không cộng tiền 2 lần; file mới hơn sẽ cập nhật trạng thái đơn.</li>
+      </ol>
+      <input type="file" id="csv" accept=".csv,text/csv">
+      <label class="chk"><input type="checkbox" id="paidChk">
+        <span>Shopee <b>đã thanh toán</b> hoa hồng cho các đơn <b>Hoàn thành</b> trong file này (tiền chuyển sang "Có thể rút" cho user).
+        Chỉ tick khi tiền kỳ đó đã về tài khoản của bạn.</span></label>
+      <div class="actions"><button class="primary" id="preview">Xem trước</button></div>
+      <div class="err" id="shErr"></div>
+    </div><div id="shResult"></div>`;
+  admin('list_shopee_imports').then(({ last }) => {
+    const el = document.getElementById('lastImport'); if (!el) return;
+    if (!last) { el.innerHTML = '<span class="pill warn">Chưa nhập lần nào</span>'; return; }
+    const hours = (Date.now() - new Date(last.created_at)) / 36e5;
+    el.innerHTML = `Lần nhập gần nhất: <b>${dt(last.created_at)}</b> ${hours > 24 ? '<span class="pill bad">Quá 24 giờ – nên nhập báo cáo mới</span>' : '<span class="pill ok">OK</span>'}`;
+  }).catch(() => {});
+
+  let csvText = '';
+  const run = async (dryRun) => {
+    const err = document.getElementById('shErr'); err.textContent = '';
+    const file = document.getElementById('csv').files[0];
+    if (!file) { err.textContent = 'Chọn file CSV trước.'; return; }
+    csvText = await file.text();
+    const completedIsPaid = document.getElementById('paidChk').checked;
+    const out = document.getElementById('shResult');
+    out.innerHTML = '<div class="empty">Đang xử lý…</div>';
+    try {
+      const r = await admin('import_shopee_report', { csv: csvText, dry_run: dryRun, completed_is_paid: completedIsPaid });
+      out.innerHTML = resultHtml(r);
+      const confirmBtn = document.getElementById('apply');
+      if (confirmBtn) confirmBtn.onclick = async () => {
+        if (!confirm(`Nhập ${r.orders} đơn Shopee? (${r.new_orders} mới, ${r.updates} cập nhật)`)) return;
+        confirmBtn.disabled = true;
+        await run(false);
+        toast('Đã nhập báo cáo Shopee');
+      };
+    } catch (e) { out.innerHTML = ''; err.textContent = e.message; }
+  };
+  document.getElementById('preview').onclick = () => run(true);
+}
+
+function resultHtml(r) {
+  if (r.missing?.length) {
+    return `<div class="card"><div class="err">Không nhận ra cột: <b>${r.missing.join(', ')}</b>.</div>
+      <div class="meta">Các cột trong file: ${[...Object.values(r.columns || {}), ...(r.unmapped || [])].map(esc).join(' · ')}</div>
+      <div class="meta">Gửi danh sách cột này cho dev để bổ sung.</div></div>`;
+  }
+  const acts = r.actions ? Object.entries(r.actions).map(([k, v]) => `${k}: ${v}`).join(', ') : '';
+  return `<div class="card">
+    <h3 style="margin-top:0">${r.dry_run ? 'Xem trước (chưa ghi gì)' : '✅ Đã nhập'}</h3>
+    <div class="stats">
+      <div><b>${r.orders}</b>đơn (${r.rows} dòng)</div>
+      <div><b>${r.matched}</b>khớp user</div>
+      <div><b>${r.unmatched}</b>không khớp sub_id</div>
+      <div><b>${r.new_orders}</b>đơn mới</div>
+      <div><b>${r.updates}</b>cập nhật</div>
+      <div><b>${r.unchanged}</b>không đổi</div>
+    </div>
+    ${acts ? `<div class="meta">Kết quả: ${esc(acts)}</div>` : ''}
+    ${r.errors?.length ? `<div class="err">Lỗi ${r.errors.length} đơn: ${r.errors.slice(0, 5).map((e) => esc(e.order_id + ' – ' + e.error)).join('; ')}</div>` : ''}
+    ${r.skipped?.length ? `<div class="meta">Bỏ qua ${r.skipped.length} dòng: ${r.skipped.slice(0, 5).map((s) => `dòng ${s.row} (${esc(s.reason)})`).join(', ')}</div>` : ''}
+    <div class="meta">Cột đã nhận: ${Object.entries(r.columns || {}).map(([k, v]) => `${k} = "${esc(v)}"`).join(' · ')}</div>
+    ${r.dry_run && r.orders ? '<div class="actions"><button class="primary" id="apply">Xác nhận nhập</button></div>' : ''}
+  </div>
+  ${r.preview?.length ? `<div class="card scroll"><table>
+    <tr><th>Mã đơn</th><th>Sub_id</th><th>Sản phẩm</th><th>Giá trị</th><th>Hoa hồng</th><th>Trạng thái</th></tr>
+    ${r.preview.map((p) => `<tr>
+      <td>${esc(p.order_id)}</td>
+      <td>${esc(p.sub_id || '–')} ${p.matched ? '<span class="pill ok">user</span>' : '<span class="pill warn">không khớp</span>'}</td>
+      <td>${esc(p.product_name || '')}</td>
+      <td>${vnd(p.order_amount)}</td>
+      <td>${vnd(p.commission_amount)}</td>
+      <td>${p.previous_status && p.previous_status !== p.status ? pill(p.previous_status) + ' → ' : ''}${pill(p.status)}</td>
+    </tr>`).join('')}
+  </table></div>` : ''}`;
 }
 
 async function start() {
