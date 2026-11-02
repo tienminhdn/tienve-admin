@@ -133,13 +133,14 @@ function renderLogin(step = 'phone', phone = '') {
 let status = 'requested';
 async function load() {
   app.innerHTML = `<div class="tabs">
-      ${[['requested', 'Chờ chuyển'], ['paid', 'Đã chuyển'], ['rejected', 'Từ chối'], ['shopee', '🛒 Nhập báo cáo Shopee']].map(([s, l]) =>
+      ${[['requested', 'Chờ chuyển'], ['paid', 'Đã chuyển'], ['rejected', 'Từ chối'], ['shopee', '🛒 Nhập báo cáo Shopee'], ['shopeeRates', '📈 Tỉ lệ shop Shopee']].map(([s, l]) =>
         `<button data-s="${s}" class="${s === status ? 'active' : ''}">${l}</button>`).join('')}
       <button id="refresh">↻ Làm mới</button>
     </div><div id="list"><div class="empty">Đang tải…</div></div>`;
   app.querySelectorAll('[data-s]').forEach((b) => b.onclick = () => { status = b.dataset.s; load(); });
   document.getElementById('refresh').onclick = load;
   if (status === 'shopee') return renderShopee();
+  if (status === 'shopeeRates') return renderShopeeRates();
   const list = document.getElementById('list');
   try {
     const { withdrawals } = await admin('list_withdrawals', { status });
@@ -267,6 +268,77 @@ async function renderShopee() {
     } catch (e) { out.innerHTML = ''; err.textContent = e.message; }
   };
   document.getElementById('preview').onclick = () => run(true);
+}
+
+// ---------------- Shopee: shop offers ("Lấy link shop hàng loạt") → "Hoàn tới …" estimates ----------------
+async function renderShopeeRates() {
+  const list = document.getElementById('list');
+  list.innerHTML = `<div class="card">
+      <h3 style="margin-top:0">Tỉ lệ hoa hồng theo shop Shopee</h3>
+      <ol class="meta">
+        <li>Vào <b>affiliate.shopee.vn → Lấy link shop hàng loạt</b>, tải file CSV (cột <i>Tên ưu đãi, Thời gian ưu đãi, Tỉ lệ hoa hồng, Link ưu đãi</i>).</li>
+        <li>Chọn file → <b>Xem trước</b> → <b>Xác nhận nhập</b>. Tải nhiều đợt và nhập lần lượt; shop trùng sẽ được cập nhật.</li>
+        <li>App dùng tỉ lệ "Lên đến" của shop để hiện <b>"Hoàn tới …"</b> trước khi mua. Shop chưa có trong bảng: app hiện "Có hoàn tiền".</li>
+      </ol>
+      <input type="file" id="ratesCsv" accept=".csv,text/csv">
+      <div class="actions"><button class="primary" id="ratesPreview">Xem trước</button></div>
+      <div class="err" id="ratesErr"></div>
+    </div><div id="ratesResult"></div>
+    <div class="card"><div class="actions" style="margin-top:0">
+      <input id="ratesQ" placeholder="Tìm tên shop hoặc mã shop" style="flex:1">
+      <button id="ratesSearch">Tìm</button></div>
+      <div id="ratesList" class="scroll"><div class="empty">Đang tải…</div></div></div>`;
+
+  const showList = async () => {
+    const el = document.getElementById('ratesList');
+    try {
+      const { offers, total } = await admin('list_shopee_shop_offers', { q: document.getElementById('ratesQ').value, limit: 200 });
+      if (!offers.length) { el.innerHTML = '<div class="empty">Chưa có shop nào.</div>'; return; }
+      const today = new Date().toISOString().slice(0, 10);
+      el.innerHTML = `<div class="meta">${total} shop trong bảng</div><table>
+        <tr><th>Shop</th><th>Mã shop</th><th>Tỉ lệ tối đa</th><th>Hiệu lực</th><th>Cập nhật</th></tr>
+        ${offers.map((o) => {
+          const expired = o.ends_on && o.ends_on < today;
+          return `<tr><td><a href="https://shopee.vn/shop/${esc(String(o.shop_id))}" target="_blank" rel="noopener">${esc(o.shop_name)}</a></td>
+            <td>${esc(String(o.shop_id))}</td><td><b>${esc(String(o.max_rate))}%</b></td>
+            <td>${esc(o.starts_on || '–')} → ${esc(o.ends_on || 'không giới hạn')} ${expired ? '<span class="pill bad">hết hạn</span>' : ''}</td>
+            <td>${dt(o.imported_at)}</td></tr>`;
+        }).join('')}</table>`;
+    } catch (e) { el.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+  document.getElementById('ratesSearch').onclick = showList;
+  document.getElementById('ratesQ').onkeydown = (e) => { if (e.key === 'Enter') showList(); };
+  showList();
+
+  const run = async (dryRun) => {
+    const err = document.getElementById('ratesErr'); err.textContent = '';
+    const file = document.getElementById('ratesCsv').files[0];
+    if (!file) { err.textContent = 'Chọn file CSV trước.'; return; }
+    const out = document.getElementById('ratesResult');
+    out.innerHTML = '<div class="empty">Đang xử lý…</div>';
+    try {
+      const r = await admin('import_shopee_shop_offers', { csv: await file.text(), dry_run: dryRun });
+      out.innerHTML = `<div class="card">
+        <h3 style="margin-top:0">${r.dry_run ? 'Xem trước (chưa ghi gì)' : '✅ Đã nhập'}</h3>
+        <div class="stats"><div><b>${r.shops}</b>shop</div><div><b>${r.new_shops}</b>shop mới</div><div><b>${r.updated_shops}</b>cập nhật</div></div>
+        ${r.skipped?.length ? `<div class="meta">Bỏ qua ${r.skipped.length} dòng: ${r.skipped.slice(0, 5).map((s) => `dòng ${s.row} (${esc(s.reason)})`).join(', ')}</div>` : ''}
+        ${r.dry_run && r.shops ? '<div class="actions"><button class="primary" id="ratesApply">Xác nhận nhập</button></div>' : ''}
+        ${r.sample?.length ? `<table><tr><th>Shop</th><th>Mã</th><th>Tỉ lệ</th><th>Hiệu lực</th></tr>
+          ${r.sample.map((o) => `<tr><td>${esc(o.shopName)}</td><td>${esc(o.shopId)}</td><td>${esc(String(o.maxRate))}%</td>
+            <td>${esc(o.startsOn || '–')} → ${esc(o.endsOn || 'không giới hạn')}</td></tr>`).join('')}</table>
+          ${r.shops > r.sample.length ? `<div class="meta">… và ${r.shops - r.sample.length} shop khác</div>` : ''}` : ''}
+      </div>`;
+      const btn = document.getElementById('ratesApply');
+      if (btn) btn.onclick = async () => {
+        if (!confirm(`Nhập tỉ lệ cho ${r.shops} shop?`)) return;
+        btn.disabled = true;
+        await run(false);
+        toast('Đã cập nhật tỉ lệ shop');
+        showList();
+      };
+    } catch (e) { out.innerHTML = ''; err.textContent = e.message; }
+  };
+  document.getElementById('ratesPreview').onclick = () => run(true);
 }
 
 function resultHtml(r) {
