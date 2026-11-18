@@ -172,7 +172,7 @@ function card(w) {
   return `<div class="card wd" data-id="${w.id}">
     <div>
       <div class="amount">${vnd(w.amount)} ${statusPill}</div>
-      <div class="meta">${esc(w.user?.full_name || 'Không tên')} · ${esc(w.user?.phone || '')} · tạo ${dt(w.created_at)}</div>
+      <div class="meta">${esc(w.user?.full_name || 'Không tên')} · ${esc(w.user?.phone || w.user?.email || '')} · tạo ${dt(w.created_at)}</div>
       <div class="kv">
         <span>Nhận về</span><b>${esc(p.bank_name || w.bank_name || '')}${isBank ? ' · ' + esc(p.bank_code || '') : ''}</b>
         <span>Số TK / SĐT</span><b><span class="copy" data-copy="${esc(p.account_number || '')}">${esc(p.account_number || w.account_number_masked || '')}</span></b>
@@ -380,7 +380,7 @@ function resultHtml(r) {
 async function start() {
   const { data: { session } } = await sb.auth.getSession();
   if (!session) return renderLogin();
-  document.getElementById('who').textContent = session.user.phone ? '+' + session.user.phone : '';
+  document.getElementById('who').textContent = session.user.phone ? '+' + session.user.phone : (session.user.email || '');
   const lo = document.getElementById('logout'); lo.hidden = false;
   lo.onclick = async () => { await sb.auth.signOut(); renderLogin(); };
   load();
